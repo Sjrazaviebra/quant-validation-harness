@@ -16,6 +16,7 @@ Verdicts: "JETER", "DONNEES INSUFFISANTES", "CANDIDAT DEMO" (never auto GO-live)
 import numpy as np
 import validate as V
 import cpcv as C
+import directional as DIR
 
 PSR_SIG = 0.95
 BETA_LONGBIAS = 0.10       # |beta| above this -> excess-over-buy-hold is a hard gate (review)
@@ -25,7 +26,9 @@ MIN_CPCV_OBS_PER_FOLD = 30
 
 
 def evaluate(returns, label="strategy", mkt_ret=None, n_trials=1, sr_trials=None,
-             spans=None, strat_ann=None, bh_ann=None, obs_per_year=None, verbose=True, boot_b=1000):
+             spans=None, strat_ann=None, bh_ann=None, obs_per_year=None, verbose=True, boot_b=1000,
+             pred=None, realized=None, breakeven_hitrate=0.50, dir_margin=0.0,
+             trained_on=None, evaluated_on=None):
     r = np.asarray(returns, dtype=float)
     out = {"label": label, "n": len(r)}
     log = []
@@ -41,6 +44,31 @@ def evaluate(returns, label="strategy", mkt_ret=None, n_trials=1, sr_trials=None
         p(f"  n={len(r)} < {MIN_OBS} -> DONNEES INSUFFISANTES.")
         out["log"] = log
         return out
+
+    # ---- directional-skill PRE-GATE (Saidd 2026, arXiv:2603.16886) ----
+    # A low RMSE is not an edge: a forecaster must beat the coin flip (and the cost-adjusted
+    # breakeven) BEFORE Sharpe/DSR are even worth computing. Only runs when pred/realized given.
+    mism = DIR.objective_mismatch_warning(trained_on, evaluated_on)
+    if mism:
+        out["objective_mismatch"] = mism
+        p(f"  !! {mism}")
+    if pred is not None and realized is not None:
+        gate = DIR.directional_gate(pred, realized, breakeven_hitrate=breakeven_hitrate,
+                                    margin=dir_margin, b=boot_b)
+        out["directional"] = gate
+        p(f"  GATE DIRECTIONNEL : hit={gate['hit_rate']:.3f} (n_eff={gate['n_eff']}) | "
+          f"CI95_lo binom={gate['ci_binom_lo']:.3f} boot={gate['ci_boot_lo']:.3f} | "
+          f"barre={gate['bar']:.3f} -> {'PASS' if gate['passed'] else 'ECHEC'}")
+        if gate.get("low_power"):
+            p(f"     (n_eff={gate['n_eff']}<30 : faible puissance, bootstrap CI peu fiable)")
+        if not gate["passed"]:
+            out["verdict"] = "JETER"
+            out["reasons"] = [f"gate directionnel : {gate['reason']}"]
+            p("  >>> VERDICT : JETER")
+            p(f"      - {out['reasons'][0]}")
+            p("      (pas de competence directionnelle nette -> Sharpe/DSR non pertinents ; cf Saidd 2026.)")
+            out["log"] = log
+            return out
 
     sr = V.sharpe(r)
     psr0 = V.psr(r, 0.0)

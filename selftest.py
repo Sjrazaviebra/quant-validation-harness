@@ -19,6 +19,7 @@ import numpy as np
 import data as D
 import gonogo as G
 import validate as V
+import directional as DIR
 
 PPY = 252 * 7
 N_TRIALS = 40
@@ -70,6 +71,34 @@ def main():
         print(f"   OK : a leve -> {str(e)[:70]}...")
 
     all_ok = guard_ok
+
+    # --- directional pre-gate (Saidd 2026) : no-skill -> ECHEC, skilled -> PASS, mismatch warns ---
+    print("\n-- gate directionnel (Saidd 2026 : ~50% directionnel => ECHEC) --")
+    ns_fail = sk_pass = integ = 0
+    for s in range(SEEDS):
+        rng = np.random.default_rng(500 + s)
+        realized = rng.normal(0.0, 1.0, 1500)
+        pred_ns = rng.normal(0.0, 1.0, 1500)                       # independent of realized -> ~50%
+        if not DIR.directional_gate(pred_ns, realized, b=SWEEP_B)["passed"]:
+            ns_fail += 1
+        agree = rng.random(1500) < 0.58                            # genuine 58% directional skill
+        pred_sk = np.where(agree, np.sign(realized), -np.sign(realized))
+        if DIR.directional_gate(pred_sk, realized, b=SWEEP_B)["passed"]:
+            sk_pass += 1
+        # integration: a no-skill forecaster must be JETER via the pre-gate (before Sharpe/DSR)
+        v = G.evaluate(realized, label="ns", n_trials=N_TRIALS,
+                       sr_trials=[1.0 + 0.01 * i for i in range(N_TRIALS)],
+                       pred=pred_ns, realized=realized, verbose=False, boot_b=SWEEP_B)["verdict"]
+        if v == "JETER":
+            integ += 1
+    mism_ok = bool(DIR.objective_mismatch_warning("rmse", "directional")) and \
+        not DIR.objective_mismatch_warning("rmse", "mse")
+    dir_ok = ns_fail >= 19 and sk_pass >= 19 and integ >= 19 and mism_ok
+    all_ok = all_ok and dir_ok
+    print(f"  no-skill -> ECHEC : {ns_fail}/{SEEDS} | skilled(58%) -> PASS : {sk_pass}/{SEEDS} | "
+          f"evaluate() pre-gate JETER : {integ}/{SEEDS} | objective-mismatch warn : "
+          f"{'OK' if mism_ok else 'ECHEC'} -> {'OK' if dir_ok else 'ECHEC'}")
+
     print("\n-- robustesse multi-seed (verdict stable sur les seeds) --")
     for name, kind, expect, kw, n, thr in CASES:
         hits = 0
@@ -98,6 +127,7 @@ def main():
 
     print("\n=================== RESULTAT SELF-TEST ===================")
     print(f"  garde-fou deflation : {'OK' if guard_ok else 'ECHEC'}")
+    print(f"  gate directionnel   : {'OK' if dir_ok else 'ECHEC'}")
     print(f"  HARNAIS {'FIABLE (flagge le faux, valide le vrai, robuste aux seeds)' if all_ok else 'DEFAILLANT'}")
     sys.exit(0 if all_ok else 1)
 
